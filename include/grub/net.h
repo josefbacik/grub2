@@ -140,6 +140,7 @@ struct grub_net_card
       struct grub_efi_simple_network *efi_net;
       grub_efi_handle_t efi_handle;
       grub_size_t last_pkt_size;
+      int (*is_efi_mac_device) (struct grub_net_card* card);
     };
 #endif
     void *data;

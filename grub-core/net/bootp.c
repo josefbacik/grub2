@@ -1297,6 +1297,10 @@ grub_cmd_bootp6 (struct grub_command *cmd __attribute__ ((unused)),
   {
     if (argc > 0 && grub_strcmp (card->name, args[0]) != 0)
       continue;
+#ifdef GRUB_MACHINE_EFI
+    else if (!card->is_efi_mac_device (card))
+      continue;
+#endif
     ncards++;
   }
 
@@ -1306,6 +1310,10 @@ grub_cmd_bootp6 (struct grub_command *cmd __attribute__ ((unused)),
 
     if (argc > 0 && grub_strcmp (card->name, args[0]) != 0)
       continue;
+#ifdef GRUB_MACHINE_EFI
+    else if (!card->is_efi_mac_device (card))
+      continue;
+#endif
 
     ifaces = grub_net_ipv6_get_link_local (card, &card->default_address);
     if (!ifaces)

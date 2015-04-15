@@ -229,6 +229,45 @@ grub_efinet_get_device_handle (struct grub_net_card *card)
   return card->efi_handle;
 }
 
+static int
+grub_efinet_is_mac_device (struct grub_net_card *card)
+{
+  grub_efi_handle_t efi_handle;
+  grub_efi_device_path_t *dp;
+  grub_efi_device_path_t *next, *p;
+  grub_efi_uint8_t type;
+  grub_efi_uint8_t subtype;
+
+  efi_handle = grub_efinet_get_device_handle (card);
+
+  if (!efi_handle)
+    return 0;
+
+  dp = grub_efi_get_device_path (efi_handle);
+
+  if (GRUB_EFI_END_ENTIRE_DEVICE_PATH (dp))
+    return 0;
+
+  for (p = (grub_efi_device_path_t *) dp, next = GRUB_EFI_NEXT_DEVICE_PATH (p);
+       ! GRUB_EFI_END_ENTIRE_DEVICE_PATH (next);
+       p = next, next = GRUB_EFI_NEXT_DEVICE_PATH (next))
+    ;
+
+  if (p)
+    {
+      type = GRUB_EFI_DEVICE_PATH_TYPE (p);
+      subtype = GRUB_EFI_DEVICE_PATH_SUBTYPE (p);
+
+      if (type == GRUB_EFI_MESSAGING_DEVICE_PATH_TYPE
+	  && subtype == GRUB_EFI_MAC_ADDRESS_DEVICE_PATH_SUBTYPE)
+	{
+	  return 1;
+	}
+    }
+
+  return 0;
+}
+
 static void
 grub_efinet_findcards (void)
 {
@@ -318,6 +357,7 @@ grub_efinet_findcards (void)
 		   sizeof (card->default_address.mac));
       card->efi_net = net;
       card->efi_handle = *handle;
+      card->is_efi_mac_device = grub_efinet_is_mac_device;
 
       grub_net_card_register (card);
     }
