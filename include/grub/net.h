@@ -418,6 +418,13 @@ struct grub_net_bootp_packet
   grub_uint8_t vendor[0];
 } GRUB_PACKED;
 
+struct grub_net_dhcpv6_packet
+{
+  grub_uint32_t message_type:8;
+  grub_uint32_t transaction_id:24;
+  grub_uint8_t dhcp_options[0];
+} GRUB_PACKED;
+
 #define	GRUB_NET_BOOTP_RFC1048_MAGIC_0	0x63
 #define	GRUB_NET_BOOTP_RFC1048_MAGIC_1	0x82
 #define	GRUB_NET_BOOTP_RFC1048_MAGIC_2	0x53
@@ -444,6 +451,14 @@ grub_net_configure_by_dhcp_ack (const char *name,
 				grub_size_t size,
 				int is_def, char **device, char **path);
 
+struct grub_net_network_level_interface *
+grub_net_configure_by_dhcpv6_reply (const char *name,
+				    struct grub_net_card *card,
+				    grub_net_interface_flags_t flags,
+				    const struct grub_net_dhcpv6_packet *v6,
+				    grub_size_t size,
+				    int is_def, char **device, char **path);
+
 grub_err_t
 grub_net_add_ipv4_local (struct grub_net_network_level_interface *inf,
 			 int mask);
@@ -451,6 +466,10 @@ grub_net_add_ipv4_local (struct grub_net_network_level_interface *inf,
 void
 grub_net_process_dhcp (struct grub_net_buff *nb,
 		       struct grub_net_card *card);
+
+void
+grub_net_process_dhcp6 (struct grub_net_buff *nb,
+			struct grub_net_card *card);
 
 int
 grub_net_hwaddr_cmp (const grub_net_link_level_address_t *a,
