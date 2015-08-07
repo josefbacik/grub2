@@ -1784,6 +1784,7 @@ GRUB_MOD_INIT(net)
 				       "", N_("list network cards"));
   cmd_lsaddr = grub_register_command ("net_ls_addr", grub_cmd_listaddrs,
 				       "", N_("list network addresses"));
+  grub_net_tcp_init ();
   grub_bootp_init ();
   grub_dns_init ();
 

@@ -22,6 +22,7 @@
 #include <grub/net/netbuff.h>
 #include <grub/time.h>
 #include <grub/priority_queue.h>
+#include <grub/env.h>
 
 #define TCP_SYN_RETRANSMISSION_TIMEOUT GRUB_NET_INTERVAL
 #define TCP_SYN_RETRANSMISSION_COUNT GRUB_NET_TRIES
@@ -61,10 +62,12 @@ struct grub_net_tcp_socket
   int they_reseted;
   int i_reseted;
   int i_stall;
+  int timestamp_supported;
   grub_uint32_t my_start_seq;
   grub_uint32_t my_cur_seq;
   grub_uint32_t their_start_seq;
   grub_uint32_t their_cur_seq;
+  grub_uint32_t cur_tsecr;
   grub_uint16_t my_window;
   struct unacked *unack_first;
   struct unacked *unack_last;
@@ -106,6 +109,31 @@ struct tcphdr
   grub_uint16_t urgent;
 } GRUB_PACKED;
 
+enum
+  {
+    TCP_SCALE_OPT = 3,
+    TCP_TIMESTAMP_OPT = 8,
+  };
+
+struct tcp_opt_hdr
+{
+  grub_uint8_t kind;
+  grub_uint8_t length;
+} GRUB_PACKED;
+
+struct tcp_scale_opt
+{
+  struct tcp_opt_hdr opt;
+  grub_uint8_t scale;
+} GRUB_PACKED;
+
+struct tcp_timestamp_opt
+{
+  struct tcp_opt_hdr opt;
+  grub_uint32_t tsval;
+  grub_uint32_t tsecr;
+} GRUB_PACKED;
+
 struct tcp_pseudohdr
 {
   grub_uint32_t src;
@@ -126,6 +154,9 @@ struct tcp6_pseudohdr
 
 static struct grub_net_tcp_socket *tcp_sockets;
 static struct grub_net_tcp_listen *tcp_listens;
+static char *grub_net_tcp_window_size;
+static grub_uint32_t tcp_window_size;
+static grub_uint8_t tcp_window_scale;
 
 #define FOR_TCP_SOCKETS(var) FOR_LIST_ELEMENTS (var, tcp_sockets)
 #define FOR_TCP_LISTENS(var) FOR_LIST_ELEMENTS (var, tcp_listens)
@@ -299,9 +330,16 @@ ack_real (grub_net_tcp_socket_t sock, int res)
 {
   struct grub_net_buff *nb_ack;
   struct tcphdr *tcph_ack;
+  grub_size_t headersize;
   grub_err_t err;
 
-  nb_ack = grub_netbuff_alloc (sizeof (*tcph_ack) + 128);
+  if (sock->timestamp_supported)
+    headersize = ALIGN_UP (sizeof (*tcph_ack) +
+			   sizeof (struct tcp_timestamp_opt), 4);
+  else
+    headersize = ALIGN_UP (sizeof (*tcph_ack), 4);
+
+  nb_ack = grub_netbuff_alloc (headersize + 128);
   if (!nb_ack)
     return;
   err = grub_netbuff_reserve (nb_ack, 128);
@@ -313,7 +351,7 @@ ack_real (grub_net_tcp_socket_t sock, int res)
       return;
     }
 
-  err = grub_netbuff_put (nb_ack, sizeof (*tcph_ack));
+  err = grub_netbuff_put (nb_ack, headersize);
   if (err)
     {
       grub_netbuff_free (nb_ack);
@@ -322,22 +360,35 @@ ack_real (grub_net_tcp_socket_t sock, int res)
       return;
     }
   tcph_ack = (void *) nb_ack->data;
+  grub_memset (tcph_ack, 0, headersize);
   if (res)
     {
       tcph_ack->ack = grub_cpu_to_be32_compile_time (0);
-      tcph_ack->flags = grub_cpu_to_be16_compile_time ((5 << 12) | TCP_RST);
+      tcph_ack->flags = grub_cpu_to_be16 ((headersize << 10) | TCP_RST);
       tcph_ack->window = grub_cpu_to_be16_compile_time (0);
     }
   else
     {
       tcph_ack->ack = grub_cpu_to_be32 (sock->their_cur_seq);
-      tcph_ack->flags = grub_cpu_to_be16_compile_time ((5 << 12) | TCP_ACK);
+      /* See comment in grub_net_tcp_open for how this magic works. */
+      tcph_ack->flags = grub_cpu_to_be16 ((headersize << 10) | TCP_ACK);
       tcph_ack->window = !sock->i_stall ? grub_cpu_to_be16 (sock->my_window)
 	: 0;
     }
   tcph_ack->urgent = 0;
   tcph_ack->src = grub_cpu_to_be16 (sock->in_port);
   tcph_ack->dst = grub_cpu_to_be16 (sock->out_port);
+  if (sock->timestamp_supported)
+    {
+      struct tcp_timestamp_opt *timestamp;
+
+      timestamp = (struct tcp_timestamp_opt *)(tcph_ack + 1);
+      timestamp->opt.kind = TCP_TIMESTAMP_OPT;
+      timestamp->opt.length = sizeof (struct tcp_timestamp_opt);
+      timestamp->tsval = grub_cpu_to_be32 (grub_get_time_ms ());
+      timestamp->tsecr = grub_cpu_to_be32 (sock->cur_tsecr);
+    }
+
   err = tcp_send (nb_ack, sock);
   if (err)
     {
@@ -567,9 +618,12 @@ grub_net_tcp_open (char *server,
   static grub_uint16_t in_port = 21550;
   struct grub_net_buff *nb;
   struct tcphdr *tcph;
+  struct tcp_scale_opt *scale;
+  struct tcp_timestamp_opt *timestamp;
   int i;
   grub_uint8_t *nbd;
   grub_net_link_level_address_t ll_target_addr;
+  grub_size_t headersize;
 
   err = grub_net_resolve_address (server, &addr);
   if (err)
@@ -604,7 +658,9 @@ grub_net_tcp_open (char *server,
   socket->fin_hook = fin_hook;
   socket->hook_data = hook_data;
 
-  nb = grub_netbuff_alloc (sizeof (*tcph) + 128);
+  headersize = ALIGN_UP (sizeof (*tcph) + sizeof (*scale) +
+			 sizeof (*timestamp), 4);
+  nb = grub_netbuff_alloc (headersize + 128);
   if (!nb)
     {
       grub_free (socket);
@@ -619,7 +675,7 @@ grub_net_tcp_open (char *server,
       return NULL;
     }
 
-  err = grub_netbuff_put (nb, sizeof (*tcph));
+  err = grub_netbuff_put (nb, headersize);
   if (err)
     {
       grub_free (socket);
@@ -635,17 +691,33 @@ grub_net_tcp_open (char *server,
     }
 
   tcph = (void *) nb->data;
+  grub_memset(tcph, 0, headersize);
   socket->my_start_seq = grub_get_time_ms ();
   socket->my_cur_seq = socket->my_start_seq + 1;
-  socket->my_window = 8192;
+  socket->my_window = tcp_window_size;
   tcph->seqnr = grub_cpu_to_be32 (socket->my_start_seq);
   tcph->ack = grub_cpu_to_be32_compile_time (0);
-  tcph->flags = grub_cpu_to_be16_compile_time ((5 << 12) | TCP_SYN);
+  /* The top 4 bits of flags indicate how many words long the header is, and
+     since headersize is in bytes we can just shif up 10 to get the right number
+     of words in headersize, it's equivalent to ((headersize >> 2) << 12). */
+  tcph->flags = grub_cpu_to_be16 ((headersize << 10) | TCP_SYN);
   tcph->window = grub_cpu_to_be16 (socket->my_window);
   tcph->urgent = 0;
   tcph->src = grub_cpu_to_be16 (socket->in_port);
   tcph->dst = grub_cpu_to_be16 (socket->out_port);
   tcph->checksum = 0;
+
+  scale = (struct tcp_scale_opt *)(tcph + 1);
+  scale->opt.kind = TCP_SCALE_OPT;
+  scale->opt.length = sizeof (struct tcp_scale_opt);
+  scale->scale = tcp_window_scale;
+
+  timestamp = (struct tcp_timestamp_opt *)(scale + 1);
+  timestamp->opt.kind = TCP_TIMESTAMP_OPT;
+  timestamp->opt.length = sizeof (struct tcp_timestamp_opt);
+  timestamp->tsval = grub_cpu_to_be32 (grub_get_time_ms ());
+  timestamp->tsecr = 0;
+
   tcph->checksum = grub_net_ip_transport_checksum (nb, GRUB_NET_IP_TCP,
 						   &socket->inf->address,
 						   &socket->out_nla);
@@ -763,6 +835,7 @@ grub_net_recv_tcp_packet (struct grub_net_buff *nb,
 {
   struct tcphdr *tcph;
   grub_net_tcp_socket_t sock;
+  grub_uint32_t tsecr = 0;
   grub_err_t err;
 
   /* Ignore broadcast.  */
@@ -787,6 +860,38 @@ grub_net_recv_tcp_packet (struct grub_net_buff *nb,
 		    (grub_size_t) (nb->tail - nb->data));
       grub_netbuff_free (nb);
       return GRUB_ERR_NONE;
+    }
+
+  /* If the packet is large enough to have the timestamp opt then lets look for
+     the tsecr value. */
+  if ((grub_be_to_cpu16 (tcph->flags >> 12) * sizeof (grub_uint32_t)) >=
+      ALIGN_UP (sizeof (struct tcphdr) + sizeof (struct tcp_timestamp_opt), 4))
+    {
+      struct tcp_opt_hdr *opt;
+      grub_size_t remaining = nb->tail - nb->data;
+
+      opt = (struct tcp_opt_hdr *)(tcph + 1);
+      while (remaining >= sizeof(struct tcp_opt_hdr))
+	{
+	  grub_uint8_t len = 1;
+	  if (opt->kind == 8 || opt->kind == 0)
+	    break;
+	  if (opt->kind > 1)
+	    len = opt->length;
+	  if (len > remaining)
+	    len = remaining;
+	  remaining -= len;
+	  opt = (struct tcp_opt_hdr *)((grub_uint8_t *)opt + len);
+	}
+
+      /* Ok we definitely have the timestamp option. */
+      if (remaining >= sizeof(struct tcp_timestamp_opt) && opt->kind == 8)
+	{
+	  struct tcp_timestamp_opt *timestamp;
+
+	  timestamp = (struct tcp_timestamp_opt *)opt;
+	  tsecr = grub_be_to_cpu32 (timestamp->tsval);
+	}
     }
 
   FOR_TCP_SOCKETS (sock)
@@ -823,6 +928,9 @@ grub_net_recv_tcp_packet (struct grub_net_buff *nb,
 	sock->their_start_seq = grub_be_to_cpu32 (tcph->seqnr);
 	sock->their_cur_seq = sock->their_start_seq + 1;
 	sock->established = 1;
+	sock->timestamp_supported = 0;
+	if (tsecr)
+	  sock->timestamp_supported = 1;
       }
 
     if (grub_be_to_cpu16 (tcph->flags) & TCP_RST)
@@ -924,6 +1032,9 @@ grub_net_recv_tcp_packet (struct grub_net_buff *nb,
 	      return err;
 	    }
 
+	  /* We only update the tsecr when we advance the window. */
+	  if (tsecr >= sock->cur_tsecr)
+	    sock->cur_tsecr = tsecr;
 	  sock->their_cur_seq += (nb_top->tail - nb_top->data);
 	  if (grub_be_to_cpu16 (tcph->flags) & TCP_FIN)
 	    {
@@ -1017,4 +1128,52 @@ grub_net_tcp_unstall (grub_net_tcp_socket_t sock)
     return;
   sock->i_stall = 0;
   ack (sock);
+}
+
+static char *
+window_set_env (struct grub_env_var *var __attribute__ ((unused)),
+		const char *val)
+{
+  grub_uint32_t ret;
+
+  if (val == NULL)
+    return NULL;
+
+  ret = (grub_uint32_t) grub_strtoul (val, 0, 0);
+  if (grub_errno != GRUB_ERR_NONE)
+    {
+      grub_printf ("Invalid number for window size '%s'.\n", val);
+      return NULL;
+    }
+
+  /* A window size greater than 1gib is invalid. */
+  if (ret > 1024 * 1024 * 1024)
+    {
+      grub_error (GRUB_ERR_BAD_ARGUMENT, "TCP window size must be <= 1gib");
+      return NULL;
+    }
+  grub_net_tcp_window_size = grub_strdup (val);
+  tcp_window_size = ret;
+  tcp_window_scale = 0;
+
+  /* The window size is only 16 bits long, so we have to scale it down to fit in
+     the header and calculate the scale along the way. */
+  while (tcp_window_size > 65535)
+    {
+      tcp_window_size >>= 1;
+      tcp_window_scale += 1;
+    }
+
+  return grub_net_tcp_window_size;
+}
+
+/* We set the default window size to 1mib. */
+#define DEFAULT_TCP_WINDOW_SIZE "1048576"
+
+void
+grub_net_tcp_init (void)
+{
+  grub_register_variable_hook ("net_tcp_window_size", NULL, window_set_env);
+  grub_env_export ("net_tcp_window_size");
+  grub_env_set ("net_tcp_window_size", DEFAULT_TCP_WINDOW_SIZE);
 }
