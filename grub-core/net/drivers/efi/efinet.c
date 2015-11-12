@@ -23,6 +23,7 @@
 #include <grub/efi/api.h>
 #include <grub/efi/efi.h>
 #include <grub/i18n.h>
+#include <grub/net/ip.h>
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
@@ -183,8 +184,9 @@ open_card (struct grub_net_card *dev)
 	 We need unicast and broadcast and additionaly all nodes and
 	 solicited multicast for IPv6. Solicited multicast is per-IPv6
 	 address and we currently do not have API to do it so simply
-	 try to enable receive of all multicast packets or evertyhing in
-	 the worst case (i386 PXE driver always enables promiscuous too).
+	 enable the all node addresses and the link local address.  We do this
+	 because some firmware has been found to not do promiscuous multicast
+	 mode properly.
 
 	 This does trust firmware to do what it claims to do.
        */
@@ -192,14 +194,25 @@ open_card (struct grub_net_card *dev)
 	{
 	  grub_uint32_t filters = GRUB_EFI_SIMPLE_NETWORK_RECEIVE_UNICAST   |
 				  GRUB_EFI_SIMPLE_NETWORK_RECEIVE_BROADCAST |
-				  GRUB_EFI_SIMPLE_NETWORK_RECEIVE_PROMISCUOUS_MULTICAST;
+				  GRUB_EFI_SIMPLE_NETWORK_RECEIVE_MULTICAST;
+	  grub_efi_status_t st;
+	  grub_efi_mac_address_t mac_filter[2] = {
+		  { 0x1, 0, 0x5e, 0, 0, 1, },
+		  { 0x33, 0x33, 0, 0, 0, 1, },};
 
 	  filters &= net->mode->receive_filter_mask;
-	  if (!(filters & GRUB_EFI_SIMPLE_NETWORK_RECEIVE_PROMISCUOUS_MULTICAST))
-	    filters |= (net->mode->receive_filter_mask &
-			GRUB_EFI_SIMPLE_NETWORK_RECEIVE_PROMISCUOUS);
+	  if (net->mode->max_mcast_filter_count < 2)
+	    filters &= ~GRUB_EFI_SIMPLE_NETWORK_RECEIVE_MULTICAST;
 
-	  efi_call_6 (net->receive_filters, net, filters, 0, 0, 0, NULL);
+	  if (filters & GRUB_EFI_SIMPLE_NETWORK_RECEIVE_MULTICAST)
+	    st = efi_call_6 (net->receive_filters, net, filters, 0, 0, 2,
+			     mac_filter);
+	  else
+	    st = efi_call_6 (net->receive_filters, net, filters, 0, 0, 0,
+			     NULL);
+	  if (st != GRUB_EFI_SUCCESS)
+	    grub_dprintf("efinet", "failed to set receive filters %u, %u\n",
+			 (unsigned)filters, (unsigned)st);
 	}
 
       efi_call_4 (grub_efi_system_table->boot_services->close_protocol,
@@ -210,6 +223,58 @@ open_card (struct grub_net_card *dev)
 
   /* If it failed we just try to run as best as we can */
   return GRUB_ERR_NONE;
+}
+
+/* We only need the lower 24 bits of the address, so just take the bottom part
+   of the address and convert it over.
+ */
+static void
+solicited_node_mcast_addr_to_mac (grub_uint64_t addr,
+				  grub_efi_mac_address_t mac)
+{
+  grub_uint64_t cpu_addr = grub_be_to_cpu64(addr);
+  int i, c = 0;
+
+  /* The format is 33:33:xx:xx:xx:xx, where xx is the last 32 bits of the
+     multicast address.
+
+     The solicited node mcast addr is in the format ff02:0:0:0:0:1:ffxx:xxxx,
+     where xx is the last 24 bits of the ipv6 address.
+   */
+  mac[0] = 0x33;
+  mac[1] = 0x33;
+  mac[2] = 0xff;
+  for (i = 3; i < 6; i++, c++)
+    mac[i] = (grub_uint8_t)((cpu_addr >> (16 - 8 * c)) & 0xff);
+}
+
+static void
+add_addr (struct grub_net_card *dev,
+	  const grub_net_network_level_address_t *address)
+{
+  grub_efi_simple_network_t *net = dev->efi_net;
+  grub_efi_mac_address_t mac_filters[16];
+  grub_efi_status_t st;
+  unsigned slot = net->mode->mcast_filter_count;
+
+  /* We don't need to add anything for ipv4 addresses. */
+  if (address->type != GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV6)
+    return;
+
+  if ((slot >= net->mode->max_mcast_filter_count)
+      || !(GRUB_EFI_SIMPLE_NETWORK_RECEIVE_MULTICAST &
+	   net->mode->receive_filter_mask))
+    return;
+
+  grub_memcpy(mac_filters, net->mode->mcast_filter,
+	      sizeof (grub_efi_mac_address_t) * slot);
+  solicited_node_mcast_addr_to_mac (address->ipv6[1], mac_filters[slot++]);
+  st = efi_call_6 (net->receive_filters, net,
+		   GRUB_EFI_SIMPLE_NETWORK_RECEIVE_MULTICAST, 0, 0, slot,
+		   mac_filters);
+  if (st != GRUB_EFI_SUCCESS)
+    grub_dprintf("efinet", "failed to add new receive filter %u\n",
+		 (unsigned)st);
 }
 
 static void
@@ -228,7 +293,8 @@ static struct grub_net_card_driver efidriver =
     .open = open_card,
     .close = close_card,
     .send = send_card_buffer,
-    .recv = get_card_packet
+    .recv = get_card_packet,
+    .add_addr = add_addr,
   };
 
 grub_efi_handle_t

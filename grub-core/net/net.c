@@ -252,6 +252,8 @@ grub_net_add_addr_real (char *name,
   inter->dhcp_ack = NULL;
   inter->dhcp_acklen = 0;
 
+  if (card->driver->add_addr)
+    card->driver->add_addr(card, addr);
   grub_net_network_level_interface_register (inter);
 
   return inter;

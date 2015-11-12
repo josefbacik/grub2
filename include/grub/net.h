@@ -67,6 +67,32 @@ typedef enum grub_net_card_flags
     GRUB_NET_CARD_NO_MANUAL_INTERFACES = 2
   } grub_net_card_flags_t;
 
+typedef enum grub_network_level_protocol_id 
+{
+  GRUB_NET_NETWORK_LEVEL_PROTOCOL_DHCP_RECV,
+  GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV4,
+  GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV6
+} grub_network_level_protocol_id_t;
+
+typedef enum
+{
+  DNS_OPTION_IPV4,
+  DNS_OPTION_IPV6,
+  DNS_OPTION_PREFER_IPV4,
+  DNS_OPTION_PREFER_IPV6
+} grub_dns_option_t;
+
+typedef struct grub_net_network_level_address
+{
+  grub_network_level_protocol_id_t type;
+  union
+  {
+    grub_uint32_t ipv4;
+    grub_uint64_t ipv6[2];
+  };
+  grub_dns_option_t option;
+} grub_net_network_level_address_t;
+
 struct grub_net_card;
 
 struct grub_net_card_driver
@@ -79,6 +105,8 @@ struct grub_net_card_driver
   grub_err_t (*send) (struct grub_net_card *dev,
 		      struct grub_net_buff *buf);
   struct grub_net_buff * (*recv) (struct grub_net_card *dev);
+  void (*add_addr) (struct grub_net_card *dev,
+		    const grub_net_network_level_address_t *address);
 };
 
 typedef struct grub_net_packet
@@ -149,32 +177,6 @@ struct grub_net_card
 };
 
 struct grub_net_network_level_interface;
-
-typedef enum grub_network_level_protocol_id 
-{
-  GRUB_NET_NETWORK_LEVEL_PROTOCOL_DHCP_RECV,
-  GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV4,
-  GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV6
-} grub_network_level_protocol_id_t;
-
-typedef enum
-{
-  DNS_OPTION_IPV4,
-  DNS_OPTION_IPV6,
-  DNS_OPTION_PREFER_IPV4,
-  DNS_OPTION_PREFER_IPV6
-} grub_dns_option_t;
-
-typedef struct grub_net_network_level_address
-{
-  grub_network_level_protocol_id_t type;
-  union
-  {
-    grub_uint32_t ipv4;
-    grub_uint64_t ipv6[2];
-  };
-  grub_dns_option_t option;
-} grub_net_network_level_address_t;
 
 typedef struct grub_net_network_level_netaddress
 {
