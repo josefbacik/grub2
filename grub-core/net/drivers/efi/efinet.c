@@ -32,8 +32,7 @@ static grub_efi_guid_t net_io_guid = GRUB_EFI_SIMPLE_NETWORK_GUID;
 static grub_efi_guid_t pxe_io_guid = GRUB_EFI_PXE_GUID;
 
 static grub_err_t
-send_card_buffer (struct grub_net_card *dev,
-		  struct grub_net_buff *pack)
+clear_txbuffer (struct grub_net_card *dev)
 {
   grub_efi_status_t st;
   grub_efi_simple_network_t *net = dev->efi_net;
@@ -75,6 +74,21 @@ send_card_buffer (struct grub_net_card *dev,
 	  return grub_error (GRUB_ERR_TIMEOUT,
 			     N_("couldn't send network packet"));
       }
+  return GRUB_ERR_NONE;
+}
+
+static grub_err_t
+send_card_buffer (struct grub_net_card *dev,
+		  struct grub_net_buff *pack)
+{
+  grub_efi_status_t st;
+  grub_efi_simple_network_t *net = dev->efi_net;
+  grub_err_t ret;
+  void *txbuf;
+
+  ret = clear_txbuffer (dev);
+  if (ret != GRUB_ERR_NONE)
+    return ret;
 
   dev->last_pkt_size = (pack->tail - pack->data);
   if (dev->last_pkt_size > dev->mtu)
@@ -254,6 +268,7 @@ add_addr (struct grub_net_card *dev,
 {
   grub_efi_simple_network_t *net = dev->efi_net;
   grub_efi_mac_address_t mac_filters[16];
+  grub_uint32_t current_settings = net->mode->receive_filter_setting;
   grub_efi_status_t st;
   unsigned slot = net->mode->mcast_filter_count;
 
@@ -266,11 +281,18 @@ add_addr (struct grub_net_card *dev,
 	   net->mode->receive_filter_mask))
     return;
 
+  /* Copy the existing filters and add the new filter. */
   grub_memcpy(mac_filters, net->mode->mcast_filter,
 	      sizeof (grub_efi_mac_address_t) * slot);
   solicited_node_mcast_addr_to_mac (address->ipv6[1], mac_filters[slot++]);
-  st = efi_call_6 (net->receive_filters, net,
-		   GRUB_EFI_SIMPLE_NETWORK_RECEIVE_MULTICAST, 0, 0, slot,
+
+  /* Some firmware will hang if we try to modify the receive filters while the
+     tx buffer still has something in the queue, so clear it before resetting
+     the filters. */
+  if (clear_txbuffer (dev) != GRUB_ERR_NONE)
+    grub_dprintf("efinet", "couldn't clear the txbuffer.\n");
+
+  st = efi_call_6 (net->receive_filters, net, current_settings, 0, 0, slot,
 		   mac_filters);
   if (st != GRUB_EFI_SUCCESS)
     grub_dprintf("efinet", "failed to add new receive filter %u\n",
