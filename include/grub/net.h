@@ -469,7 +469,7 @@ enum
     GRUB_NET_BOOTP_END = 0xff
   };
 
-struct grub_net_network_level_interface *
+void
 grub_net_configure_by_dhcp_ack (const char *name,
 				struct grub_net_card *card,
 				grub_net_interface_flags_t flags,
@@ -477,7 +477,7 @@ grub_net_configure_by_dhcp_ack (const char *name,
 				grub_size_t size,
 				int is_def, char **device, char **path);
 
-struct grub_net_network_level_interface *
+void
 grub_net_configure_by_dhcpv6_reply (const char *name,
 				    struct grub_net_card *card,
 				    grub_net_interface_flags_t flags,

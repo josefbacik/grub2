@@ -131,7 +131,7 @@ parse_dhcp_vendor (const char *name, const void *vend, int limit, int *mask)
 
 #define OFFSET_OF(x, y) ((grub_size_t)((grub_uint8_t *)((y)->x) - (grub_uint8_t *)(y)))
 
-struct grub_net_network_level_interface *
+void
 grub_net_configure_by_dhcp_ack (const char *name,
 				struct grub_net_card *card,
 				grub_net_interface_flags_t flags,
@@ -156,6 +156,13 @@ grub_net_configure_by_dhcp_ack (const char *name,
 	       bp->hw_len < sizeof (hwaddr.mac) ? bp->hw_len
 	       : sizeof (hwaddr.mac));
   hwaddr.type = GRUB_NET_LINK_LEVEL_PROTOCOL_ETHERNET;
+
+  FOR_NET_NETWORK_LEVEL_INTERFACES (inter)
+  {
+    if (inter->card == card &&
+	grub_net_addr_cmp (&inter->address, &addr) == 0)
+      return;
+  }
 
   inter = grub_net_add_addr (name, card, &addr, &hwaddr, flags);
 #if 0
@@ -260,8 +267,6 @@ grub_net_configure_by_dhcp_ack (const char *name,
     }
   else
     grub_errno = GRUB_ERR_NONE;
-
-  return inter;
 }
 
 struct grub_dhcpv6_option {
@@ -803,7 +808,7 @@ grub_net_configure_by_dhcpv6_adv (const struct grub_net_dhcpv6_packet *v6_adv,
 }
 
 
-struct grub_net_network_level_interface *
+void
 grub_net_configure_by_dhcpv6_reply (const char *name,
 	struct grub_net_card *card,
 	grub_net_interface_flags_t flags,
@@ -831,7 +836,7 @@ grub_net_configure_by_dhcpv6_reply (const char *name,
   if (v6->message_type != DHCPv6_REPLY)
     {
       grub_error (GRUB_ERR_IO, N_("DHCPv6 info not found"));
-      return NULL;
+      return;
     }
 
   your_ip = find_dhcpv6_address(v6);
@@ -839,7 +844,7 @@ grub_net_configure_by_dhcpv6_reply (const char *name,
   if (!your_ip)
     {
       grub_error (GRUB_ERR_IO, N_("DHCPv6 address not found"));
-      return NULL;
+      return;
     }
 
   get_dhcpv6_dns_address (v6, &dns, &num_dns);
@@ -867,6 +872,12 @@ grub_net_configure_by_dhcpv6_reply (const char *name,
   addr.type = GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV6;
   addr.ipv6[0] = grub_get_unaligned64 (your_ip);
   addr.ipv6[1] = grub_get_unaligned64 (your_ip + 8);
+  FOR_NET_NETWORK_LEVEL_INTERFACES (inf)
+  {
+    if (inf->card == card
+	&& grub_net_addr_cmp (&inf->address, &addr) == 0)
+      return;
+  }
   inf = grub_net_add_addr (name, card, &addr, &card->default_address, flags);
 
   netaddr.type = GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV6;
@@ -889,7 +900,7 @@ grub_net_configure_by_dhcpv6_reply (const char *name,
     {
       *device = grub_xasprintf ("%s,%s", proto, server_ip);
       if (!*device)
-	return NULL;
+	return;
     }
 
   if (path && boot_file)
@@ -904,11 +915,7 @@ grub_net_configure_by_dhcpv6_reply (const char *name,
 	  else
 	    **path = 0;
 	}
-      else
-	return NULL;
     }
-
-  return inf;
 }
 
 void
