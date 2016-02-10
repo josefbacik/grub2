@@ -1460,24 +1460,43 @@ grub_net_fs_close (grub_file_t file)
   return GRUB_ERR_NONE;
 }
 
+grub_err_t
+net_open_card (struct grub_net_card *card)
+{
+  struct grub_net_network_level_interface *inf;
+  grub_err_t err = GRUB_ERR_NONE;
+
+  if (card->opened)
+    return err;
+
+  if (card->driver->open)
+    err = card->driver->open (card);
+  if (err)
+    return err;
+  card->opened = 1;
+
+  if (!card->driver->add_addr)
+    return err;
+
+  FOR_NET_NETWORK_LEVEL_INTERFACES (inf)
+  {
+    if (inf->card == card)
+      card->driver->add_addr(card, &inf->address);
+  }
+  return err;
+}
+
 static void
 receive_packets (struct grub_net_card *card, int *stop_condition)
 {
   int received = 0;
+  grub_err_t err;
+
   if (card->num_ifaces == 0)
     return;
-  if (!card->opened)
-    {
-      grub_err_t err = GRUB_ERR_NONE;
-      if (card->driver->open)
-	err = card->driver->open (card);
-      if (err)
-	{
-	  grub_errno = GRUB_ERR_NONE;
-	  return;
-	}
-      card->opened = 1;
-    }
+  err = net_open_card (card);
+  if (err)
+    return;
   while (received < 100)
     {
       /* Maybe should be better have a fixed number of packets for each card

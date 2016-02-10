@@ -341,6 +341,9 @@ grub_net_add_addr (const char *name,
 		   const grub_net_link_level_address_t *hwaddress,
 		   grub_net_interface_flags_t flags);
 
+grub_err_t
+net_open_card (struct grub_net_card *card);
+
 extern struct grub_net_network_level_interface *grub_net_network_level_interfaces;
 #define FOR_NET_NETWORK_LEVEL_INTERFACES(var) for (var = grub_net_network_level_interfaces; var; var = var->next)
 #define FOR_NET_NETWORK_LEVEL_INTERFACES_SAFE(var,next) for (var = grub_net_network_level_interfaces, next = (var ? var->next : 0); var; var = next, next = (var ? var->next : 0))
