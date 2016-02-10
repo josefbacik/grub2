@@ -19,6 +19,7 @@
 #include <grub/net.h>
 #include <grub/net/ip.h>
 #include <grub/net/netbuff.h>
+#include <grub/env.h>
 
 struct icmp_header
 {
@@ -361,6 +362,7 @@ grub_net_recv_icmp6_packet (struct grub_net_buff *nb,
 	if (grub_be_to_cpu16 (radv->router_lifetime) > 0)
 	  {
 	    struct grub_net_route *route;
+	    const char *default_inf = grub_env_get ("net_default_interface");
 
 	    FOR_NET_ROUTES (route)
 	    {
@@ -369,6 +371,24 @@ grub_net_recv_icmp6_packet (struct grub_net_buff *nb,
 	    }
 	    if (route == NULL)
 	      default_route = 1;
+
+	    /* If we have a default interface and it's on the same card as we're
+	       getting this advertisement on then we want to make sure we use
+	       that interface as the route interface. */
+	    if (default_inf)
+	      {
+		FOR_NET_NETWORK_LEVEL_INTERFACES (inf)
+		{
+		  if (grub_strcmp(default_inf, inf->name))
+		    continue;
+		  if (inf->card == card && inf != orig_inf
+		      && inf->address.type == GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV6
+		      && grub_net_hwaddr_cmp(&inf->hwaddress,
+					     &orig_inf->hwaddress) == 0)
+		    route_inf = inf;
+		  break;
+		}
+	      }
 	  }
 
 	for (ptr = (grub_uint8_t *) nb->data; ptr < nb->tail;
