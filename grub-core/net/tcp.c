@@ -111,6 +111,7 @@ struct tcphdr
 
 enum
   {
+    TCP_MSS_OPT = 2,
     TCP_SCALE_OPT = 3,
     TCP_TIMESTAMP_OPT = 8,
   };
@@ -132,6 +133,12 @@ struct tcp_timestamp_opt
   struct tcp_opt_hdr opt;
   grub_uint32_t tsval;
   grub_uint32_t tsecr;
+} GRUB_PACKED;
+
+struct tcp_mss_opt
+{
+  struct tcp_opt_hdr opt;
+  grub_uint16_t mss;
 } GRUB_PACKED;
 
 struct tcp_pseudohdr
@@ -620,6 +627,7 @@ grub_net_tcp_open (char *server,
   struct tcphdr *tcph;
   struct tcp_scale_opt *scale;
   struct tcp_timestamp_opt *timestamp;
+  struct tcp_mss_opt *mss;
   int i;
   grub_uint8_t *nbd;
   grub_net_link_level_address_t ll_target_addr;
@@ -659,7 +667,7 @@ grub_net_tcp_open (char *server,
   socket->hook_data = hook_data;
 
   headersize = ALIGN_UP (sizeof (*tcph) + sizeof (*scale) +
-			 sizeof (*timestamp), 4);
+			 sizeof (*timestamp) + sizeof (*mss), 4);
   nb = grub_netbuff_alloc (headersize + 128);
   if (!nb)
     {
@@ -717,6 +725,11 @@ grub_net_tcp_open (char *server,
   timestamp->opt.length = sizeof (struct tcp_timestamp_opt);
   timestamp->tsval = grub_cpu_to_be32 (grub_get_time_ms ());
   timestamp->tsecr = 0;
+
+  mss = (struct tcp_mss_opt *)(timestamp + 1);
+  mss->opt.kind = TCP_MSS_OPT;
+  mss->opt.length = sizeof (struct tcp_mss_opt);
+  mss->mss = grub_cpu_to_be16 (inf->card->mtu - 128 - sizeof (*tcph));
 
   tcph->checksum = grub_net_ip_transport_checksum (nb, GRUB_NET_IP_TCP,
 						   &socket->inf->address,
