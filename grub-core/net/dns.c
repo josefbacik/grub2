@@ -109,11 +109,10 @@ struct recv_data
 {
   grub_size_t *naddresses;
   struct grub_net_network_level_address **addresses;
-  int cache;
   grub_uint16_t id;
+  grub_uint32_t ttl;
   int dns_err;
   char *name;
-  const char *oname;
   int stop;
 };
 
@@ -230,6 +229,7 @@ recv_hook (grub_net_udp_socket_t sock __attribute__ ((unused)),
 	   struct grub_net_buff *nb,
 	   void *data_)
 {
+  struct grub_net_network_level_address *addresses;
   struct dns_header *head;
   struct recv_data *data = data_;
   int i, j;
@@ -276,14 +276,17 @@ recv_hook (grub_net_udp_socket_t sock __attribute__ ((unused)),
       ptr++;
       ptr += 4;
     }
-  *data->addresses = grub_malloc (sizeof ((*data->addresses)[0])
-				 * grub_be_to_cpu16 (head->ancount));
-  if (!*data->addresses)
+  addresses = grub_realloc (*data->addresses,
+			    sizeof ((*data->addresses)[0])
+			    * (grub_be_to_cpu16 (head->ancount)
+			       + *data->naddresses));
+  if (!addresses)
     {
       grub_errno = GRUB_ERR_NONE;
       grub_netbuff_free (nb);
       return GRUB_ERR_NONE;
     }
+  *data->addresses = addresses;
   reparse_ptr = ptr;
  reparse:
   for (i = 0, ptr = reparse_ptr; i < grub_be_to_cpu16 (head->ancount); i++)
@@ -386,31 +389,6 @@ recv_hook (grub_net_udp_socket_t sock __attribute__ ((unused)),
 	}
       ptr += length;
     }
-  if (ttl_all && *data->naddresses && data->cache)
-    {
-      int h;
-      grub_dprintf ("dns", "caching for %d seconds\n", ttl_all);
-      h = hash (data->oname);
-      grub_free (dns_cache[h].name);
-      dns_cache[h].name = 0;
-      grub_free (dns_cache[h].addresses);
-      dns_cache[h].addresses = 0;
-      dns_cache[h].name = grub_strdup (data->oname);
-      dns_cache[h].naddresses = *data->naddresses;
-      dns_cache[h].addresses = grub_malloc (*data->naddresses
-					    * sizeof (dns_cache[h].addresses[0]));
-      dns_cache[h].limit_time = grub_get_time_ms () + 1000 * ttl_all;
-      if (!dns_cache[h].addresses || !dns_cache[h].name)
-	{
-	  grub_free (dns_cache[h].name);
-	  dns_cache[h].name = 0;
-	  grub_free (dns_cache[h].addresses);
-	  dns_cache[h].addresses = 0;
-	}
-      grub_memcpy (dns_cache[h].addresses, *data->addresses,
-		   *data->naddresses
-		   * sizeof (dns_cache[h].addresses[0]));
-    }
   grub_netbuff_free (nb);
   grub_free (redirect_save);
   return GRUB_ERR_NONE;
@@ -435,7 +413,7 @@ grub_net_dns_lookup (const char *name,
   grub_uint8_t *qtypeptr;
   grub_err_t err = GRUB_ERR_NONE;
   struct recv_data data = {naddresses, addresses, cache,
-			   grub_cpu_to_be16 (id++), 0, 0, name, 0};
+			   grub_cpu_to_be16 (id++), ~0U, 0, 0};
   grub_uint8_t *nbd;
   grub_size_t try_server = 0;
 
@@ -602,6 +580,31 @@ grub_net_dns_lookup (const char *name,
   
   grub_free (sockets);
 
+  if (data.ttl && *data.naddresses && cache)
+    {
+      int h;
+      grub_dprintf ("dns", "caching for %d seconds\n", data.ttl);
+      h = hash (name);
+      grub_free (dns_cache[h].name);
+      dns_cache[h].name = 0;
+      grub_free (dns_cache[h].addresses);
+      dns_cache[h].addresses = 0;
+      dns_cache[h].name = grub_strdup (name);
+      dns_cache[h].naddresses = *data.naddresses;
+      dns_cache[h].addresses = grub_malloc (*data.naddresses
+					    * sizeof (dns_cache[h].addresses[0]));
+      dns_cache[h].limit_time = grub_get_time_ms () + 1000 * data.ttl;
+      if (!dns_cache[h].addresses || !dns_cache[h].name)
+	{
+	  grub_free (dns_cache[h].name);
+	  dns_cache[h].name = 0;
+	  grub_free (dns_cache[h].addresses);
+	  dns_cache[h].addresses = 0;
+	}
+      grub_memcpy (dns_cache[h].addresses, *data.addresses,
+		   *data.naddresses
+		   * sizeof (dns_cache[h].addresses[0]));
+    }
   if (*data.naddresses)
     return GRUB_ERR_NONE;
   if (data.dns_err)
