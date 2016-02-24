@@ -95,7 +95,7 @@ parse_dhcp_vendor (const char *name, const void *vend, int limit, int *mask)
 		struct grub_net_network_level_address s;
 		s.type = GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV4;
 		s.ipv4 = grub_get_unaligned32 (ptr);
-		s.option = DNS_OPTION_PREFER_IPV4;
+		s.option = DNS_OPTION_IPV4;
 		grub_net_add_dns_server (&s);
 		ptr += 4;
 	      }
@@ -492,7 +492,7 @@ get_dhcpv6_dns_address (const struct grub_net_dhcpv6_packet *packet,
       (la + i)->type = GRUB_NET_NETWORK_LEVEL_PROTOCOL_IPV6;
       (la + i)->ipv6[0] = grub_get_unaligned64 (pa);
       (la + i)->ipv6[1] = grub_get_unaligned64 (pa + 8);
-      (la + i)->option = DNS_OPTION_PREFER_IPV6;
+      (la + i)->option = DNS_OPTION_IPV6;
     }
 
   *addr = la;
