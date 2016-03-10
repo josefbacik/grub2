@@ -202,7 +202,9 @@ grub_initrd_init (int argc, char *argv[],
       initrd_ctx->components[i].file = grub_file_open (fname);
       if (!initrd_ctx->components[i].file)
 	{
+	  grub_error_push ();
 	  grub_initrd_close (initrd_ctx);
+	  grub_error_pop ();
 	  return grub_errno;
 	}
       initrd_ctx->nfiles++;

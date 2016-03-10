@@ -406,7 +406,9 @@ http_establish (struct grub_file *file, grub_off_t offset, int initial)
   err = grub_net_send_tcp_packet (data->sock, nb, 1);
   if (err)
     {
+      grub_error_push ();
       grub_net_tcp_close (data->sock, GRUB_NET_TCP_ABORT);
+      grub_error_pop ();
       return err;
     }
 
