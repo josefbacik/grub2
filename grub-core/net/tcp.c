@@ -632,6 +632,8 @@ grub_net_tcp_open (char *server,
   grub_uint8_t *nbd;
   grub_net_link_level_address_t ll_target_addr;
   grub_size_t headersize;
+  char addr_buf[GRUB_NET_MAX_STR_ADDR_LEN];
+  char gateway_buf[GRUB_NET_MAX_STR_ADDR_LEN];
 
   err = grub_net_resolve_address (server, &addr);
   if (err)
@@ -655,6 +657,11 @@ grub_net_tcp_open (char *server,
   socket = grub_zalloc (sizeof (*socket));
   if (socket == NULL)
     return NULL; 
+
+  grub_net_addr_to_str (&addr, addr_buf);
+  grub_net_addr_to_str (&gateway, gateway_buf);
+  grub_dprintf("net", "opening connection to %s on inf %s via gateway %s\n",
+	       addr_buf, inf->name, gateway_buf);
 
   socket->out_port = out_port;
   socket->inf = inf;
