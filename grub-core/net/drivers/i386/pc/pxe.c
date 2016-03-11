@@ -166,16 +166,11 @@ grub_pxe_scan (void)
   return bangpxe;
 }
 
-static struct grub_net_buff *
-grub_pxe_recv (struct grub_net_card *dev __attribute__ ((unused)))
+static int in_progress = 0;
+
+static void
+grub_pxe_process_isr (struct grub_pxe_undi_isr *isr)
 {
-  struct grub_pxe_undi_isr *isr;
-  static int in_progress = 0;
-  grub_uint8_t *ptr, *end;
-  struct grub_net_buff *buf;
-
-  isr = (void *) GRUB_MEMORY_MACHINE_SCRATCH_ADDR;
-
   if (!in_progress)
     {
       grub_memset (isr, 0, sizeof (*isr));
@@ -186,13 +181,14 @@ grub_pxe_recv (struct grub_net_card *dev __attribute__ ((unused)))
 	 breaks on intel cards.
        */
       if (isr->status)
-	{
-	  in_progress = 0;
-	  return NULL;
+        {
+	  grub_dprintf("net", "problem pulling isr %d\n", (int)isr->status);
+	  return;
 	}
       grub_memset (isr, 0, sizeof (*isr));
       isr->func_flag = GRUB_PXE_ISR_IN_PROCESS;
       grub_pxe_call (GRUB_PXENV_UNDI_ISR, isr, pxe_rm_entry);
+      in_progress = 1;
     }
   else
     {
@@ -200,18 +196,13 @@ grub_pxe_recv (struct grub_net_card *dev __attribute__ ((unused)))
       isr->func_flag = GRUB_PXE_ISR_IN_GET_NEXT;
       grub_pxe_call (GRUB_PXENV_UNDI_ISR, isr, pxe_rm_entry);
     }
+}
 
-  while (isr->func_flag != GRUB_PXE_ISR_OUT_RECEIVE)
-    {
-      if (isr->status || isr->func_flag == GRUB_PXE_ISR_OUT_DONE)
-	{
-	  in_progress = 0;
-	  return NULL;
-	}
-      grub_memset (isr, 0, sizeof (*isr));
-      isr->func_flag = GRUB_PXE_ISR_IN_GET_NEXT;
-      grub_pxe_call (GRUB_PXENV_UNDI_ISR, isr, pxe_rm_entry);
-    }
+static struct grub_net_buff *
+grub_pxe_make_net_buff (struct grub_pxe_undi_isr *isr)
+{
+  struct grub_net_buff *buf;
+  grub_uint8_t *ptr, *end;
 
   buf = grub_netbuff_alloc (isr->frame_len + 2);
   if (!buf)
@@ -230,48 +221,118 @@ grub_pxe_recv (struct grub_net_card *dev __attribute__ ((unused)))
   ptr += isr->buffer_len;
   while (ptr < end)
     {
-      grub_memset (isr, 0, sizeof (*isr));
-      isr->func_flag = GRUB_PXE_ISR_IN_GET_NEXT;
-      grub_pxe_call (GRUB_PXENV_UNDI_ISR, isr, pxe_rm_entry);
+      grub_pxe_process_isr (isr);
       if (isr->status || isr->func_flag != GRUB_PXE_ISR_OUT_RECEIVE)
 	{
-	  in_progress = 1;
+	  grub_dprintf("net", "half processed packet\n");
 	  grub_netbuff_free (buf);
 	  return NULL;
 	}
-
       grub_memcpy (ptr, LINEAR (isr->buffer), isr->buffer_len);
       ptr += isr->buffer_len;
     }
-  in_progress = 1;
-
   return buf;
 }
 
+static struct grub_net_buff *
+grub_pxe_recv (struct grub_net_card *dev)
+{
+  struct grub_pxe_undi_isr *isr;
+
+  if (dev->data)
+    {
+      struct grub_net_buff *buf = dev->data;
+      grub_dprintf("net", "Pulling existing receive packet\n");
+      dev->data = NULL;
+      return buf;
+    }
+
+  isr = (void *) GRUB_MEMORY_MACHINE_SCRATCH_ADDR;
+  grub_pxe_process_isr (isr);
+  while (isr->func_flag != GRUB_PXE_ISR_OUT_RECEIVE)
+    {
+      if (isr->status || isr->func_flag == GRUB_PXE_ISR_OUT_DONE)
+	{
+	  if (isr->status)
+	    grub_dprintf("net", "error pulling next %d\n", (int)isr->status);
+	  in_progress = 0;
+	  return 0;
+	}
+      grub_memset (isr, 0, sizeof (*isr));
+      isr->func_flag = GRUB_PXE_ISR_IN_GET_NEXT;
+      grub_pxe_call (GRUB_PXENV_UNDI_ISR, isr, pxe_rm_entry);
+    }
+  return grub_pxe_make_net_buff (isr);
+}
+
 static grub_err_t 
-grub_pxe_send (struct grub_net_card *dev __attribute__ ((unused)),
-	       struct grub_net_buff *pack)
+grub_pxe_send (struct grub_net_card *dev, struct grub_net_buff *pack)
 {
   struct grub_pxe_undi_transmit *trans;
   struct grub_pxe_undi_tbd *tbd;
   char *buf;
 
-  trans = (void *) GRUB_MEMORY_MACHINE_SCRATCH_ADDR;
-  grub_memset (trans, 0, sizeof (*trans));
-  tbd = (void *) (GRUB_MEMORY_MACHINE_SCRATCH_ADDR + 128);
-  grub_memset (tbd, 0, sizeof (*tbd));
-  buf = (void *) (GRUB_MEMORY_MACHINE_SCRATCH_ADDR + 256);
-  grub_memcpy (buf, pack->data, pack->tail - pack->data);
+  while (1)
+    {
+      int made_progress = 0;
 
-  trans->tbd = SEGOFS ((grub_addr_t) tbd);
-  trans->protocol = 0;
-  tbd->len = pack->tail - pack->data;
-  tbd->buf = SEGOFS ((grub_addr_t) buf);
+      trans = (void *) GRUB_MEMORY_MACHINE_SCRATCH_ADDR;
+      grub_memset (trans, 0, sizeof (*trans));
+      tbd = (void *) (GRUB_MEMORY_MACHINE_SCRATCH_ADDR + 128);
+      grub_memset (tbd, 0, sizeof (*tbd));
+      buf = (void *) (GRUB_MEMORY_MACHINE_SCRATCH_ADDR + 256);
+      grub_memcpy (buf, pack->data, pack->tail - pack->data);
 
-  grub_pxe_call (GRUB_PXENV_UNDI_TRANSMIT, trans, pxe_rm_entry);
-  if (trans->status)
-    return grub_error (GRUB_ERR_IO, N_("couldn't send network packet"));
+      trans->tbd = SEGOFS ((grub_addr_t) tbd);
+      trans->protocol = 0;
+      tbd->len = pack->tail - pack->data;
+      tbd->buf = SEGOFS ((grub_addr_t) buf);
+
+      grub_pxe_call (GRUB_PXENV_UNDI_TRANSMIT, trans, pxe_rm_entry);
+      if (!trans->status)
+	break;
+      if (trans->status == GRUB_PXENV_STATUS_OUT_OF_RESOURCES)
+	{
+	  struct grub_pxe_undi_isr *isr;
+
+	  grub_dprintf("net", "Out of transmit buffers, processing "
+		       "interrupts\n");
+	  /* Process any outstanding transmit interrupts. */
+	  isr = (void *) GRUB_MEMORY_MACHINE_SCRATCH_ADDR;
+	  do
+	    {
+	      grub_pxe_process_isr (isr);
+	      if (isr->status)
+		{
+		  grub_dprintf("net", "process interrupts errored %d,"
+			       "made_progress %d\n", (int)isr->status, made_progress);
+		  if (made_progress)
+		    break;
+		  else
+		    goto out_err;
+		}
+	      if (isr->func_flag == GRUB_PXE_ISR_OUT_DONE)
+		in_progress = 0;
+	      made_progress = 1;
+	    } while (isr->func_flag == GRUB_PXE_ISR_OUT_TRANSMIT);
+
+	  /* If we had a receive interrupt in the queue we need to copy this
+	     buffer out otherwise we'll lose it. */
+	  if (isr->func_flag == GRUB_PXE_ISR_OUT_RECEIVE)
+	    {
+	      if (dev->data)
+		grub_dprintf("net", "dropping packet, already have a "
+			     "pending packet.\n");
+	      else
+	        dev->data = grub_pxe_make_net_buff (isr);
+	    }
+	}
+      else
+        goto out_err;
+    }
   return 0;
+out_err:
+  return grub_error (GRUB_ERR_IO, N_("couldn't send network packet"));
 }
 
 static void
