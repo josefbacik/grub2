@@ -995,6 +995,7 @@ grub_script_execute_cmdline (struct grub_script_cmd *cmd)
   /* Execute the GRUB command or function.  */
   if (grubcmd)
     {
+      grub_dprintf ("script", "executing grub command %s\n", grubcmd->name);
       if (grub_extractor_level && !(grubcmd->flags
 				    & GRUB_COMMAND_FLAG_EXTRACTOR))
 	ret = grub_error (GRUB_ERR_EXTRACTOR,
