@@ -194,6 +194,9 @@ tftp_receive (grub_net_udp_socket_t sock __attribute__ ((unused)),
 	    ptr++;
 	  ptr++;
 	}
+      grub_dprintf ("tftp", "file_size is %llu, block_size is %llu\n",
+		    (unsigned long long)data->file_size,
+		    (unsigned long long)data->block_size);
       data->block = 0;
       grub_netbuff_free (nb);
       err = ack (data, 0);
