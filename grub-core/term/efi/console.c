@@ -201,7 +201,7 @@ grub_efi_console_input_init (struct grub_term_input *term)
 
   text_input = grub_efi_open_protocol(grub_efi_system_table->console_in_handler,
 				      &text_input_ex_guid,
-				      GRUB_EFI_OPEN_PROTOCOL_GET_PROTOCOL);
+				      GRUB_EFI_OPEN_PROTOCOL_BY_EXCLUSIVE);
   term->data = (void *)text_input;
 
   return 0;
